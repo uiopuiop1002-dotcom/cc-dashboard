@@ -7,53 +7,126 @@ function norm(v: any) {
 }
 
 function normKey(v: any) {
-  // 헤더 셀에 줄바꿈/여러 공백이 들어오는 경우가 있어서 정리
   return norm(v).replace(/\s+/g, " ");
 }
 
+function isEmptyRow(row: any[]) {
+  return row.every((cell) => norm(cell) === "");
+}
+
 /**
- * 2줄 헤더(상위/하위) 병합 + 상위헤더 forward-fill
+ * 헤더 행 자동 탐지
+ * - 상위 헤더 행: 기업명, 상담구분, 통화결과, 상담원 같은 대표 컬럼이 있는 행
+ * - 하위 헤더 행: 경로, 경로상세, 대분류, 중분류, 소분류 같은 세부 컬럼이 있는 행
  */
-function sheetToRowsWith2Headers(sheet: XLSX.WorkSheet) {
-  const table = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: "" }) as any[][];
-  const topRaw = table[0] ?? [];
-  const subRaw = table[1] ?? [];
+function detectHeaderRows(table: any[][]) {
+  let topHeaderIndex = -1;
+  let subHeaderIndex = -1;
+
+  const scanLimit = Math.min(table.length, 10);
+
+  for (let i = 0; i < scanLimit; i++) {
+    const row = table[i] ?? [];
+    const values = row.map(normKey);
+
+    const topScore = [
+      values.some((v) => v.includes("기업명")),
+      values.some((v) => v.includes("상담구분")),
+      values.some((v) => v.includes("통화결과")),
+      values.some((v) => v.includes("상담원")),
+      values.some((v) => v.includes("상담경로") || v.includes("상담분류")),
+    ].filter(Boolean).length;
+
+    if (topScore >= 3) {
+      topHeaderIndex = i;
+      break;
+    }
+  }
+
+  if (topHeaderIndex === -1) {
+    topHeaderIndex = 0;
+  }
+
+  const nextRow = table[topHeaderIndex + 1] ?? [];
+  const nextValues = nextRow.map(normKey);
+
+  const hasSubHeaders =
+    nextValues.some((v) => v.includes("경로")) ||
+    nextValues.some((v) => v.includes("경로상세")) ||
+    nextValues.some((v) => v.includes("대분류")) ||
+    nextValues.some((v) => v.includes("중분류")) ||
+    nextValues.some((v) => v.includes("소분류"));
+
+  subHeaderIndex = hasSubHeaders ? topHeaderIndex + 1 : topHeaderIndex;
+
+  return { topHeaderIndex, subHeaderIndex };
+}
+
+/**
+ * 헤더 2줄(상위/하위) 병합 + 상위헤더 forward-fill
+ */
+function sheetToRowsWithDetectedHeaders(sheet: XLSX.WorkSheet) {
+  const table = XLSX.utils.sheet_to_json<any[]>(sheet, {
+    header: 1,
+    defval: "",
+  }) as any[][];
+
+  const { topHeaderIndex, subHeaderIndex } = detectHeaderRows(table);
+
+  const topRaw = table[topHeaderIndex] ?? [];
+  const subRaw = table[subHeaderIndex] ?? [];
 
   const len = Math.max(topRaw.length, subRaw.length);
 
-  // 상위 헤더 forward-fill
   const top: string[] = [];
   let lastTop = "";
+
   for (let i = 0; i < len; i++) {
     const t = normKey(topRaw[i]);
     if (t) lastTop = t;
-    top[i] = lastTop; // 빈칸이면 이전 값
+    top[i] = lastTop;
   }
 
   const sub: string[] = [];
-  for (let i = 0; i < len; i++) sub[i] = normKey(subRaw[i]);
+  for (let i = 0; i < len; i++) {
+    sub[i] = normKey(subRaw[i]);
+  }
 
-  // 키 생성
   const keys = Array.from({ length: len }, (_, i) => {
     const t = top[i];
     const s = sub[i];
 
-    if (t && s) return `${t}_${s}`; // 상담경로_경로, 상담경로_경로상세
-    if (t && !s) return t;          // 상담원, 기업명 같은 단일 컬럼
+    if (topHeaderIndex === subHeaderIndex) {
+      return t || `COL_${i}`;
+    }
+
+    if (t && s && t !== s) return `${t}_${s}`;
+    if (t && !s) return t;
     if (!t && s) return s;
+    if (t && s && t === s) return t;
     return `COL_${i}`;
   });
 
-  // 데이터(3행부터)
-  const dataRows = table.slice(2);
+  const dataStartIndex = subHeaderIndex + 1;
+  const dataRows = table.slice(dataStartIndex).filter((row) => !isEmptyRow(row));
 
-  return dataRows.map((arr) => {
+  const rows = dataRows.map((arr) => {
     const row: Row = {};
     keys.forEach((k, i) => {
       row[k] = arr[i] ?? "";
     });
     return row;
   });
+
+  return {
+    rows,
+    keys,
+    headerInfo: {
+      topHeaderIndex,
+      subHeaderIndex,
+      dataStartIndex,
+    },
+  };
 }
 
 /**
@@ -86,74 +159,70 @@ export async function POST(req: Request) {
   const wb = XLSX.read(arrayBuffer, { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
 
-  const rows = sheetToRowsWith2Headers(sheet);
+  const { rows, keys, headerInfo } = sheetToRowsWithDetectedHeaders(sheet);
 
-  const first = rows[0] ?? {};
-  const allKeys = Object.keys(first);
+  const allKeys = keys;
 
-  // ✅ 기본 컬럼들 자동 탐지(너 헤더 기반)
-  const agentKey = pickKey(allKeys, ["상담원"]);
+  // 기본 컬럼 자동 탐지
+  const agentKey =
+    pickKey(allKeys, ["상담원"]) ||
+    pickKey(allKeys, ["팀", "상담원"]) ||
+    pickKey(allKeys, ["상담", "상담원"]);
+
   const companyKey = pickKey(allKeys, ["기업명"]);
   const divisionKey = pickKey(allKeys, ["상담구분"]);
   const resultKey = pickKey(allKeys, ["통화결과"]);
 
-  // ✅ 상담경로/경로상세 자동 탐지(핵심!)
-  // '경로'는 '경로상세'가 아닌 컬럼을 선택
+  // 상담경로/경로상세 자동 탐지
   const pathKey =
     pickKey(allKeys, ["상담경로", "경로"], ["상세"]) ||
-    pickKey(allKeys, ["경로"], ["상세"]); // fallback: 그냥 '경로'
+    pickKey(allKeys, ["경로"], ["상세"]);
 
   const pathDetailKey =
     pickKey(allKeys, ["상담경로", "경로상세"]) ||
-    pickKey(allKeys, ["경로상세"]); // fallback: 그냥 '경로상세'
+    pickKey(allKeys, ["경로상세"]);
 
-  // 휴넷 인정 기업명
   const HUNET_NAMES = new Set(["(주)휴넷", "㈜휴넷"]);
 
   const byAgent: Record<string, { issueCount: number; details: string[] }> = {};
 
   rows.forEach((row, idx) => {
-    const rowNo = idx + 3; // 헤더 2줄 가정
+    const rowNo = headerInfo.dataStartIndex + idx + 1;
 
     const agent = norm(agentKey ? row[agentKey] : "") || "미지정";
-    if (!byAgent[agent]) byAgent[agent] = { issueCount: 0, details: [] };
+
+    if (!byAgent[agent]) {
+      byAgent[agent] = { issueCount: 0, details: [] };
+    }
 
     const pushIssue = (msg: string) => {
       byAgent[agent].issueCount += 1;
       byAgent[agent].details.push(`Row ${rowNo}: ${msg}`);
     };
 
-    // 1) 기업명 공란이면 오류
+    // 기업명
     const company = norm(companyKey ? row[companyKey] : "");
     if (!company) pushIssue("기업명 공란");
 
-    // 2) 상담구분 공란이면 오류
+    // 상담구분
     const division = norm(divisionKey ? row[divisionKey] : "");
     if (!division) pushIssue("상담구분 공란");
 
-    // 3) 통화결과 공란이면 오류
+    // 통화결과
     const result = norm(resultKey ? row[resultKey] : "");
     if (!result) pushIssue("통화결과 공란");
 
-    // 4) 상담경로 규칙
-    // - 경로는 필수
-    // - 아웃바운드일 때만 경로상세 필수
-    // - 인바운드는 경로상세 검사 안 함
+    // 상담경로
     const path = norm(pathKey ? row[pathKey] : "");
     const pathDetail = norm(pathDetailKey ? row[pathDetailKey] : "");
 
     if (!path) {
-      pushIssue("상담경로-경로 공란(컬럼 인식 실패 가능)");
+      pushIssue("상담경로-경로 공란");
     } else if (path === "아웃바운드") {
-      // pathDetailKey를 못 찾으면 폭발할 수 있으니, 그 경우는 규칙을 적용하지 않고 안내만 남김
-      if (!pathDetailKey) {
-        pushIssue("경로상세 컬럼을 찾지 못함(헤더 구조 확인 필요)");
-      } else if (!pathDetail) {
-        pushIssue("아웃바운드인데 경로상세 공란");
-      }
+      if (!pathDetail) pushIssue("아웃바운드인데 경로상세 공란");
     }
 
-    // 5) 휴넷이면 상담구분은 무조건 B2C (대소문자 무시)
+    // 휴넷 -> 상담구분 B2C
     if (company && HUNET_NAMES.has(company)) {
       if (division.toUpperCase() !== "B2C") {
         pushIssue(`휴넷(${company})인데 상담구분이 B2C가 아님 (${division || "공란"})`);
@@ -164,7 +233,7 @@ export async function POST(req: Request) {
   const agents = Object.entries(byAgent)
     .map(([name, v]) => ({
       name,
-      role: "UNKNOWN",
+      role: "",
       issueCount: v.issueCount,
       details: v.details,
     }))
@@ -180,6 +249,8 @@ export async function POST(req: Request) {
       resultKey,
       pathKey,
       pathDetailKey,
+      allKeys,
+      headerInfo,
     },
     agents,
   });
