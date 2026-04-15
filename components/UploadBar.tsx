@@ -1,17 +1,35 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 
-type AgentResult = { name: string; role: string; issueCount: number; details?: string[] };
+export type UploadBarHandle = {
+  openFilePicker: () => void;
+};
+
+type AgentResult = {
+  name: string;
+  role: string;
+  issueCount: number;
+  details?: string[];
+};
 
 type UploadBarProps = {
   onAnalyzed: (result: { rowCount: number; agents: AgentResult[] }) => void;
 };
 
-export default function UploadBar({ onAnalyzed }: UploadBarProps) {
+const UploadBar = forwardRef<UploadBarHandle, UploadBarProps>(function UploadBar(
+  { onAnalyzed },
+  ref
+) {
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [fileName, setFileName] = useState<string>("");
+  const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useImperativeHandle(ref, () => ({
+    openFilePicker: () => {
+      fileRef.current?.click();
+    },
+  }));
 
   function onPickFile() {
     fileRef.current?.click();
@@ -27,12 +45,24 @@ export default function UploadBar({ onAnalyzed }: UploadBarProps) {
     form.append("file", file);
 
     setLoading(true);
+
     try {
-      const res = await fetch("/api/analyze", { method: "POST", body: form });
-      if (!res.ok) throw new Error("analyze failed");
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        body: form,
+      });
+
       const data = await res.json();
-      onAnalyzed({ rowCount: data.rowCount, agents: data.agents });
-    } catch (err) {
+
+      if (!res.ok || !data.ok) {
+        throw new Error("analyze failed");
+      }
+
+      onAnalyzed({
+        rowCount: data.rowCount,
+        agents: data.agents,
+      });
+    } catch (error) {
       alert("분석 실패: 엑셀 컬럼명/파일 형식을 확인해줘");
     } finally {
       setLoading(false);
@@ -56,13 +86,13 @@ export default function UploadBar({ onAnalyzed }: UploadBarProps) {
 
       <div className="flex items-center gap-4">
         <span className="text-orange-500 bg-orange-50 px-3 py-1 rounded-full text-xs font-semibold">
-          다음 마감: 미정
+          {loading ? "분석 중..." : "업로드 가능"}
         </span>
 
         <input
           ref={fileRef}
           type="file"
-          accept=".xlsx,.xls"
+          accept=".xlsx,.xls,.csv"
           className="hidden"
           onChange={onFileChange}
         />
@@ -78,4 +108,6 @@ export default function UploadBar({ onAnalyzed }: UploadBarProps) {
       </div>
     </section>
   );
-}
+});
+
+export default UploadBar;

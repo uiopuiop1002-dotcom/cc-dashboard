@@ -13,13 +13,7 @@ type Agent = {
   details?: string[];
 };
 
-const initialAgents: Agent[] = [
-  { name: "김서아 (Sarah)", role: "LEVEL 2 SUPPORT", issueCount: 12 },
-  { name: "이민준 (Michael)", role: "GENERAL INQUIRIES", issueCount: 45 },
-  { name: "최유진 (Elena)", role: "BILLING SPECIALIST", issueCount: 0 },
-  { name: "정태희 (James)", role: "ONBOARDING", issueCount: 21 },
-  { name: "한지민 (Lisa)", role: "LEVEL 3 ESCALATE", issueCount: 32 },
-];
+const initialAgents: Agent[] = [];
 
 export default function Page() {
   const [agents, setAgents] = useState<Agent[]>(initialAgents);
