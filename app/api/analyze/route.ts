@@ -172,6 +172,8 @@ export async function POST(req: Request) {
   const companyKey = pickKey(allKeys, ["기업명"]);
   const divisionKey = pickKey(allKeys, ["상담구분"]);
   const resultKey = pickKey(allKeys, ["통화결과"]);
+  const dateKey = pickKey(allKeys, ["상담일자"]);
+  const timeKey = pickKey(allKeys, ["상담시간"]);
 
   // 상담경로/경로상세 자동 탐지
   const pathKey =
@@ -189,6 +191,13 @@ export async function POST(req: Request) {
   rows.forEach((row, idx) => {
     const rowNo = headerInfo.dataStartIndex + idx + 1;
 
+    const 상담일자 = norm(dateKey ? row[dateKey] : "");
+    const 상담시간 = norm(timeKey ? row[timeKey] : "");
+    const detailLabel =
+      상담일자 || 상담시간
+        ? `${상담일자}${상담일자 && 상담시간 ? " " : ""}${상담시간}`
+        : `Row ${rowNo}`;
+
     const agent = norm(agentKey ? row[agentKey] : "") || "미지정";
 
     if (!byAgent[agent]) {
@@ -197,7 +206,7 @@ export async function POST(req: Request) {
 
     const pushIssue = (msg: string) => {
       byAgent[agent].issueCount += 1;
-      byAgent[agent].details.push(`Row ${rowNo}: ${msg}`);
+      byAgent[agent].details.push(`${detailLabel}: ${msg}`);
     };
 
     // 기업명
@@ -247,6 +256,8 @@ export async function POST(req: Request) {
       companyKey,
       divisionKey,
       resultKey,
+      dateKey,
+      timeKey,
       pathKey,
       pathDetailKey,
       allKeys,
